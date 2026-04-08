@@ -218,12 +218,12 @@ public class BotService {
                     .withState(SessionState.ADMIN_ADD_MENU_NAME, now())
                     .withPendingCategory(category, now());
             database.saveSession(updated);
-            sendText(userId, "Введите название для раздела \"" + category.title() + "\".", adminBackKeyboard());
+            sendText(userId, "Введите название для раздела \"" + category.title() + "\".", adminBackWithAddMoreKeyboard());
             return;
         }
         if (payload.equals("admin:menu:delete")) {
             database.saveSession(database.session(userId).withState(SessionState.ADMIN_DELETE_MENU_NUMBER, now()));
-            sendText(userId, currentMenuText() + "\n\nВведите порядковый номер позиции, которую нужно удалить.", adminBackKeyboard());
+            sendText(userId, currentMenuText() + "\n\nВведите порядковый номер позиции, которую нужно удалить.", adminBackWithAddMoreKeyboard());
         }
     }
 
@@ -250,7 +250,7 @@ public class BotService {
         List<MenuItem> items = database.menuItems(category);
         List<List<MaxBotApiClient.CallbackButton>> rows = new ArrayList<>();
         for (MenuItem item : items) {
-            rows.add(row(button(categoryEmoji(category) + " " + item.name(), "order:pick:" + category.name() + ":" + escapeMenuValue(item.name()))));
+            rows.add(row(button(item.name(), "order:pick:" + category.name() + ":" + escapeMenuValue(item.name()))));
         }
         rows.add(row(button("⏭️ Пропустить", "order:skip:" + category.name())));
         sendText(userId, category.question(), rows);
@@ -349,7 +349,7 @@ public class BotService {
         }
         database.addMenuItem(category, text.trim());
         database.resetSession(userId);
-        sendText(userId, "✅ Позиция добавлена в раздел \"" + category.title() + "\".", adminBackKeyboard());
+        sendText(userId, "✅ Позиция добавлена в раздел \"" + category.title() + "\".", adminBackWithAddMoreKeyboard());
     }
 
     private void handleDeleteMenuNumberInput(long userId, String text) {
@@ -358,12 +358,12 @@ public class BotService {
             boolean deleted = database.deleteMenuItemBySequence(number);
             database.resetSession(userId);
             if (deleted) {
-                sendText(userId, "✅ Позиция удалена.", adminBackKeyboard());
+                sendText(userId, "✅ Позиция удалена.", adminBackWithAddMoreKeyboard());
             } else {
-                sendText(userId, "Позиция с таким номером не найдена.", adminBackKeyboard());
+                sendText(userId, "Позиция с таким номером не найдена.", adminBackWithAddMoreKeyboard());
             }
         } catch (NumberFormatException e) {
-            sendText(userId, "Введите именно порядковый номер позиции.", adminBackKeyboard());
+            sendText(userId, "Введите именно порядковый номер позиции.", adminBackWithAddMoreKeyboard());
         }
     }
 
@@ -484,6 +484,13 @@ public class BotService {
 
     private List<List<MaxBotApiClient.CallbackButton>> adminBackKeyboard() {
         return ofRows(row(button("↩️ В админ панель", "admin:panel")));
+    }
+
+    private List<List<MaxBotApiClient.CallbackButton>> adminBackWithAddMoreKeyboard() {
+        return ofRows(
+                row(button("➕ Добавить еще", "admin:menu:add")),
+                row(button("↩️ В админ панель", "admin:panel"))
+        );
     }
 
     private List<List<MaxBotApiClient.CallbackButton>> menuCategoryKeyboard(String prefix) {
