@@ -218,7 +218,7 @@ public class BotService {
                     .withState(SessionState.ADMIN_ADD_MENU_NAME, now())
                     .withPendingCategory(category, now());
             database.saveSession(updated);
-            sendText(userId, "Введите название для раздела \"" + category.title() + "\".", adminBackWithAddMoreKeyboard());
+            sendText(userId, "Введите название для раздела \"" + category.title() + "\".", adminBackKeyboard());
             return;
         }
         if (payload.equals("admin:menu:delete")) {
