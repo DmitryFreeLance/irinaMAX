@@ -3,12 +3,11 @@ package ru.dmitry.maxbot.api;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import ru.dmitry.maxbot.api.dto.UpdateListPayload;
 import ru.dmitry.maxbot.config.AppConfig;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URI;
@@ -25,8 +24,6 @@ import java.util.Map;
 import java.util.Objects;
 
 public class MaxBotApiClient {
-    private static final Logger log = LoggerFactory.getLogger(MaxBotApiClient.class);
-
     private final HttpClient httpClient;
     private final ObjectMapper objectMapper;
     private final String baseUrl;
@@ -65,17 +62,17 @@ public class MaxBotApiClient {
     public void sendTextMessage(long userId, String text, List<List<CallbackButton>> buttons) {
         MessageRequest body = new MessageRequest(text, buttons == null || buttons.isEmpty() ? null : List.of(new InlineKeyboardAttachment(buttons)));
         String url = baseUrl + "/messages?user_id=" + userId;
-        postJson(url, body, MessageResponse.class);
+        postJson(url, body, JsonNode.class);
     }
 
     public void answerCallback(String callbackId) {
         String url = baseUrl + "/answers?callback_id=" + encode(callbackId);
-        postJson(url, Map.of(), MessageResponse.class);
+        postJson(url, Map.of(), CallbackAnswerResponse.class);
     }
 
     public void answerCallbackWithNotification(String callbackId, String notification) {
         String url = baseUrl + "/answers?callback_id=" + encode(callbackId);
-        postJson(url, Map.of("notification", notification), MessageResponse.class);
+        postJson(url, Map.of("notification", notification), CallbackAnswerResponse.class);
     }
 
     private <T> T postJson(String url, Object body, Class<T> responseType) {
@@ -141,7 +138,7 @@ public class MaxBotApiClient {
         }
     }
 
-    public record MessageResponse(boolean success, String message) {
+    public record CallbackAnswerResponse(boolean success, String message) {
     }
 
     public static List<List<CallbackButton>> keyboardRows() {

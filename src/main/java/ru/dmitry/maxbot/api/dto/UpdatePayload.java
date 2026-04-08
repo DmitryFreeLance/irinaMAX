@@ -8,6 +8,9 @@ public record UpdatePayload(
         Long timestamp,
         MessagePayload message,
         CallbackPayload callback,
-        String user_locale
+        String user_locale,
+        Long chat_id,
+        UserPayload user,
+        String payload
 ) {
 }

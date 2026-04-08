@@ -38,7 +38,7 @@ public class BotService {
     private static final DateTimeFormatter MOSCOW_DATE = DateTimeFormatter.ofPattern("dd.MM.yyyy").withZone(MOSCOW);
     private static final DateTimeFormatter MOSCOW_TIME = DateTimeFormatter.ofPattern("HH:mm").withZone(MOSCOW);
     private static final String SKIPPED = "Пропущено";
-    private static final List<String> UPDATE_TYPES = List.of("message_created", "message_callback");
+    private static final List<String> UPDATE_TYPES = List.of("message_created", "message_callback", "bot_started");
 
     private final AppConfig config;
     private final Database database;
@@ -56,12 +56,17 @@ public class BotService {
         while (true) {
             try {
                 UpdateListPayload updates = apiClient.getUpdates(marker, config.pollLimit(), config.pollTimeoutSeconds(), UPDATE_TYPES);
+                Long nextMarker = updates.marker();
                 if (updates.updates() != null) {
                     for (UpdatePayload update : updates.updates()) {
-                        handleUpdate(update);
+                        try {
+                            handleUpdate(update);
+                        } catch (Exception e) {
+                            log.error("Update processing failed for type {}", update == null ? null : update.update_type(), e);
+                        }
                     }
                 }
-                marker = updates.marker();
+                marker = nextMarker;
             } catch (Exception e) {
                 log.error("Polling failed", e);
                 sleepQuietly(3);
@@ -76,8 +81,20 @@ public class BotService {
         switch (update.update_type()) {
             case "message_created" -> handleMessageCreated(update.message());
             case "message_callback" -> handleCallback(update.callback());
+            case "bot_started" -> handleBotStarted(update);
             default -> log.debug("Ignored update type {}", update.update_type());
         }
+    }
+
+    private void handleBotStarted(UpdatePayload update) {
+        UserPayload user = update.user();
+        if (user == null || user.user_id() == null) {
+            return;
+        }
+        long userId = user.user_id();
+        database.upsertUser(userId, user.first_name(), user.last_name(), user.username());
+        database.resetSession(userId);
+        sendStartScreen(userId);
     }
 
     private void handleMessageCreated(MessagePayload message) {
