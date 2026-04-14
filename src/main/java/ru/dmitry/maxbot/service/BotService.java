@@ -39,12 +39,14 @@ public class BotService {
     private static final DateTimeFormatter MOSCOW_DATE = DateTimeFormatter.ofPattern("dd.MM.yyyy").withZone(MOSCOW);
     private static final DateTimeFormatter MOSCOW_TIME = DateTimeFormatter.ofPattern("HH:mm").withZone(MOSCOW);
     private static final String SKIPPED = "Пропущено";
+    private static final int MAX_INTERNAL_ERROR_STREAK = 3;
     private static final List<String> UPDATE_TYPES = List.of("message_created", "message_callback", "bot_started");
 
     private final AppConfig config;
     private final Database database;
     private final MaxBotApiClient apiClient;
     private Long marker;
+    private int internalErrorStreak;
 
     public BotService(AppConfig config, Database database, MaxBotApiClient apiClient) {
         this.config = config;
@@ -68,9 +70,21 @@ public class BotService {
                     }
                 }
                 marker = nextMarker;
+                internalErrorStreak = 0;
             } catch (Exception e) {
                 if (isHttpTimeout(e)) {
                     log.warn("Long polling request timed out, retrying");
+                    continue;
+                }
+                if (isMaxInternalError(e)) {
+                    internalErrorStreak++;
+                    log.warn("MAX API internal error on /updates (streak={}), retrying", internalErrorStreak);
+                    if (internalErrorStreak >= MAX_INTERNAL_ERROR_STREAK) {
+                        marker = null;
+                        internalErrorStreak = 0;
+                        log.warn("Reset polling marker after repeated MAX internal errors");
+                    }
+                    sleepQuietly(1);
                     continue;
                 }
                 log.error("Polling failed", e);
@@ -83,6 +97,18 @@ public class BotService {
         Throwable current = error;
         while (current != null) {
             if (current instanceof HttpTimeoutException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private boolean isMaxInternalError(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null && message.contains("MAX API error 500")) {
                 return true;
             }
             current = current.getCause();

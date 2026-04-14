@@ -54,7 +54,7 @@ public class MaxBotApiClient {
 
         HttpRequest request = baseRequest(url.toString())
                 .GET()
-                .timeout(Duration.ofSeconds(Math.max(timeoutSeconds + 15L, 120L)))
+                .timeout(Duration.ofSeconds(Math.max(timeoutSeconds + 20L, 45L)))
                 .build();
         return send(request, UpdateListPayload.class);
     }
