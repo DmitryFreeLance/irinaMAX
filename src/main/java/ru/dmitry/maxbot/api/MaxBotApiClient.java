@@ -54,7 +54,7 @@ public class MaxBotApiClient {
 
         HttpRequest request = baseRequest(url.toString())
                 .GET()
-                .timeout(Duration.ofSeconds(timeoutSeconds + 15L))
+                .timeout(Duration.ofSeconds(Math.max(timeoutSeconds + 15L, 120L)))
                 .build();
         return send(request, UpdateListPayload.class);
     }
@@ -67,7 +67,7 @@ public class MaxBotApiClient {
 
     public void answerCallback(String callbackId) {
         String url = baseUrl + "/answers?callback_id=" + encode(callbackId);
-        postJson(url, Map.of(), CallbackAnswerResponse.class);
+        postJson(url, Map.of("notification", "Принято"), CallbackAnswerResponse.class);
     }
 
     public void answerCallbackWithNotification(String callbackId, String notification) {

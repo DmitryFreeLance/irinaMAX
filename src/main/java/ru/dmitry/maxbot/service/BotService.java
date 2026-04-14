@@ -27,6 +27,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
+import java.net.http.HttpTimeoutException;
 
 import static ru.dmitry.maxbot.api.MaxBotApiClient.button;
 import static ru.dmitry.maxbot.api.MaxBotApiClient.ofRows;
@@ -68,10 +69,25 @@ public class BotService {
                 }
                 marker = nextMarker;
             } catch (Exception e) {
+                if (isHttpTimeout(e)) {
+                    log.warn("Long polling request timed out, retrying");
+                    continue;
+                }
                 log.error("Polling failed", e);
                 sleepQuietly(3);
             }
         }
+    }
+
+    private boolean isHttpTimeout(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof HttpTimeoutException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private void handleUpdate(UpdatePayload update) {
