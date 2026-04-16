@@ -34,6 +34,7 @@ public class MaxBotApiClient {
         this.token = config.token();
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(20))
+                .version(HttpClient.Version.HTTP_1_1)
                 .build();
         this.objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())

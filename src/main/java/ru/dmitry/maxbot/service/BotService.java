@@ -19,6 +19,10 @@ import ru.dmitry.maxbot.model.UserProfile;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.EOFException;
+import java.io.IOException;
+import java.net.SocketException;
+import java.net.http.HttpTimeoutException;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
@@ -27,7 +31,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.TimeUnit;
-import java.net.http.HttpTimeoutException;
 
 import static ru.dmitry.maxbot.api.MaxBotApiClient.button;
 import static ru.dmitry.maxbot.api.MaxBotApiClient.ofRows;
@@ -40,6 +43,7 @@ public class BotService {
     private static final DateTimeFormatter MOSCOW_TIME = DateTimeFormatter.ofPattern("HH:mm").withZone(MOSCOW);
     private static final String SKIPPED = "Пропущено";
     private static final int MAX_INTERNAL_ERROR_STREAK = 3;
+    private static final int NETWORK_ERROR_STREAK_BEFORE_MARKER_RESET = 20;
     private static final List<String> UPDATE_TYPES = List.of("message_created", "message_callback", "bot_started");
 
     private final AppConfig config;
@@ -47,6 +51,7 @@ public class BotService {
     private final MaxBotApiClient apiClient;
     private Long marker;
     private int internalErrorStreak;
+    private int transientNetworkErrorStreak;
 
     public BotService(AppConfig config, Database database, MaxBotApiClient apiClient) {
         this.config = config;
@@ -71,6 +76,7 @@ public class BotService {
                 }
                 marker = nextMarker;
                 internalErrorStreak = 0;
+                transientNetworkErrorStreak = 0;
             } catch (Exception e) {
                 if (isHttpTimeout(e)) {
                     log.warn("Long polling request timed out, retrying");
@@ -87,6 +93,20 @@ public class BotService {
                     sleepQuietly(1);
                     continue;
                 }
+                if (isTransientNetworkError(e)) {
+                    transientNetworkErrorStreak++;
+                    if (transientNetworkErrorStreak == 1 || transientNetworkErrorStreak % 10 == 0) {
+                        log.warn("Transient network error while polling (streak={}): {}", transientNetworkErrorStreak, rootCauseMessage(e));
+                    }
+                    if (transientNetworkErrorStreak >= NETWORK_ERROR_STREAK_BEFORE_MARKER_RESET) {
+                        marker = null;
+                        transientNetworkErrorStreak = 0;
+                        log.warn("Reset polling marker after repeated transient network errors");
+                    }
+                    sleepQuietly(1);
+                    continue;
+                }
+                transientNetworkErrorStreak = 0;
                 log.error("Polling failed", e);
                 sleepQuietly(3);
             }
@@ -114,6 +134,27 @@ public class BotService {
             current = current.getCause();
         }
         return false;
+    }
+
+    private boolean isTransientNetworkError(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            if (current instanceof SocketException || current instanceof EOFException || current instanceof IOException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private String rootCauseMessage(Throwable error) {
+        Throwable current = error;
+        Throwable last = error;
+        while (current != null) {
+            last = current;
+            current = current.getCause();
+        }
+        return last == null ? "unknown" : String.valueOf(last.getMessage());
     }
 
     private void handleUpdate(UpdatePayload update) {
