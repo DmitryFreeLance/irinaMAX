@@ -74,7 +74,7 @@ public class MaxBotApiClient {
         String token = uploadFile(endpoint.url(), filePath);
         MessageRequest body = new MessageRequest(caption, List.of(new FileAttachment(new UploadedInfo(token))));
         String url = baseUrl + "/messages?user_id=" + userId;
-        postJson(url, body, JsonNode.class);
+        sendFileMessageWithRetry(url, body);
     }
 
     public void answerCallback(String callbackId) {
@@ -94,6 +94,35 @@ public class MaxBotApiClient {
                 .timeout(Duration.ofSeconds(30))
                 .build();
         return send(request, responseType);
+    }
+
+    private void sendFileMessageWithRetry(String url, MessageRequest body) {
+        int maxAttempts = 8;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                postJson(url, body, JsonNode.class);
+                return;
+            } catch (IllegalStateException e) {
+                if (!isAttachmentNotReadyError(e) || attempt == maxAttempts) {
+                    throw e;
+                }
+                sleepQuietly(300L * attempt);
+            }
+        }
+    }
+
+    private boolean isAttachmentNotReadyError(IllegalStateException error) {
+        String message = error.getMessage();
+        return message != null && message.contains("attachment.not.ready");
+    }
+
+    private void sleepQuietly(long millis) {
+        try {
+            Thread.sleep(millis);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("Interrupted while waiting attachment processing", e);
+        }
     }
 
     private HttpRequest.Builder baseRequest(String url) {
