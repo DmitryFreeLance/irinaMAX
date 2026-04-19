@@ -8,6 +8,7 @@ import ru.dmitry.maxbot.api.dto.UpdatePayload;
 import ru.dmitry.maxbot.api.dto.UserPayload;
 import ru.dmitry.maxbot.config.AppConfig;
 import ru.dmitry.maxbot.db.Database;
+import ru.dmitry.maxbot.model.CompanyItem;
 import ru.dmitry.maxbot.model.MenuCategory;
 import ru.dmitry.maxbot.model.MenuItem;
 import ru.dmitry.maxbot.model.OrderDraft;
@@ -16,20 +17,28 @@ import ru.dmitry.maxbot.model.PageResult;
 import ru.dmitry.maxbot.model.SessionData;
 import ru.dmitry.maxbot.model.SessionState;
 import ru.dmitry.maxbot.model.UserProfile;
+import org.apache.poi.ss.usermodel.Row;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.EOFException;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.net.SocketException;
 import java.net.http.HttpTimeoutException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static ru.dmitry.maxbot.api.MaxBotApiClient.button;
@@ -177,7 +186,7 @@ public class BotService {
         long userId = user.user_id();
         database.upsertUser(userId, user.first_name(), user.last_name(), user.username());
         database.resetSession(userId);
-        sendStartScreen(userId);
+        sendCompanySelection(userId);
     }
 
     private void handleMessageCreated(MessagePayload message) {
@@ -197,7 +206,7 @@ public class BotService {
 
         if ("/start".equalsIgnoreCase(text) || "начать".equalsIgnoreCase(text)) {
             database.resetSession(userId);
-            sendStartScreen(userId);
+            sendCompanySelection(userId);
             return;
         }
 
@@ -206,6 +215,8 @@ public class BotService {
             case ADMIN_ADD_ADMIN_ID -> handleAddAdminInput(userId, text);
             case ADMIN_ADD_MENU_NAME -> handleMenuNameInput(userId, text, session);
             case ADMIN_DELETE_MENU_NUMBER -> handleDeleteMenuNumberInput(userId, text);
+            case ADMIN_ADD_COMPANY_NAME -> handleAddCompanyInput(userId, text);
+            case ADMIN_DELETE_COMPANY_NUMBER -> handleDeleteCompanyNumberInput(userId, text);
             default -> handleIdleText(userId, text);
         }
     }
@@ -226,7 +237,11 @@ public class BotService {
         String payload = callback.payload();
         if (payload.equals("nav:start")) {
             database.resetSession(userId);
-            sendStartScreen(userId);
+            sendCompanySelection(userId);
+            return;
+        }
+        if (payload.startsWith("order:company:")) {
+            chooseCompany(userId, payload.substring("order:company:".length()));
             return;
         }
         if (payload.equals("nav:order")) {
@@ -241,7 +256,7 @@ public class BotService {
         }
         if (payload.equals("nav:survey")) {
             database.resetSession(userId);
-            sendStartScreen(userId);
+            sendCompanySelection(userId);
             return;
         }
         if (payload.equals("order:confirm")) {
@@ -250,7 +265,7 @@ public class BotService {
         }
         if (payload.equals("order:cancel")) {
             database.resetSession(userId);
-            sendStartScreen(userId);
+            sendCompanySelection(userId);
             return;
         }
         if (payload.startsWith("order:pick:")) {
@@ -307,6 +322,28 @@ public class BotService {
         if (payload.equals("admin:menu:delete")) {
             database.saveSession(database.session(userId).withState(SessionState.ADMIN_DELETE_MENU_NUMBER, now()));
             sendText(userId, currentMenuText() + "\n\nВведите порядковый номер позиции, которую нужно удалить.", adminBackWithAddMoreKeyboard());
+            return;
+        }
+        if (payload.equals("admin:companies")) {
+            showCompanyManagement(userId);
+            return;
+        }
+        if (payload.equals("admin:companies:view")) {
+            showCurrentCompanies(userId);
+            return;
+        }
+        if (payload.equals("admin:companies:add")) {
+            database.saveSession(database.session(userId).withState(SessionState.ADMIN_ADD_COMPANY_NAME, now()));
+            sendText(userId, "Введите название компании.", adminBackKeyboard());
+            return;
+        }
+        if (payload.equals("admin:companies:delete")) {
+            database.saveSession(database.session(userId).withState(SessionState.ADMIN_DELETE_COMPANY_NUMBER, now()));
+            sendText(userId, currentCompaniesText() + "\n\nВведите порядковый номер компании для удаления.", adminBackKeyboard());
+            return;
+        }
+        if (payload.equals("admin:excel") || payload.equals("admin:excel:refresh")) {
+            sendExcelExport(userId);
         }
     }
 
@@ -319,12 +356,58 @@ public class BotService {
             showAdminPanel(userId);
             return;
         }
+        sendCompanySelection(userId);
+    }
+
+    private void chooseCompany(long userId, String encodedCompany) {
+        String company = unescapeMenuValue(encodedCompany);
+        boolean exists = database.companies().stream().anyMatch(c -> c.name().equals(company));
+        if (!exists) {
+            sendCompanySelection(userId);
+            return;
+        }
+        SessionData session = database.session(userId);
+        SessionData updated = session.withDraft(session.draft().withCompany(company).resetOrderChoices(), now())
+                .withState(SessionState.IDLE, now())
+                .withPendingCategory(null, now());
+        database.saveSession(updated);
         sendStartScreen(userId);
+    }
+
+    private void sendCompanySelection(long userId) {
+        List<CompanyItem> companies = database.companies();
+        if (companies.isEmpty()) {
+            String text = "Список компаний пока пуст. Обратитесь к администратору для добавления компаний.";
+            if (database.isAdmin(userId)) {
+                sendText(userId, text, ofRows(
+                        row(button("🏢 Управление компаниями", "admin:companies")),
+                        row(button("🛠️ Админ панель", "admin:panel"))
+                ));
+            } else {
+                sendText(userId, text, List.of());
+            }
+            return;
+        }
+
+        List<List<MaxBotApiClient.CallbackButton>> rows = new ArrayList<>();
+        for (CompanyItem company : companies) {
+            rows.add(row(button(company.name(), "order:company:" + escapeMenuValue(company.name()))));
+        }
+        if (database.isAdmin(userId)) {
+            rows.add(row(button("🛠️ Админ панель", "nav:admin")));
+        }
+        sendText(userId, "Выберите компанию:", rows);
     }
 
     private void startOrder(long userId) {
         SessionData session = database.session(userId);
-        session = session.withState(SessionState.ORDER_SALAD, now()).withDraft(OrderDraft.empty(), now()).withPendingCategory(null, now());
+        if (session.draft().company() == null || session.draft().company().isBlank()) {
+            sendCompanySelection(userId);
+            return;
+        }
+        session = session.withState(SessionState.ORDER_SALAD, now())
+                .withDraft(session.draft().resetOrderChoices(), now())
+                .withPendingCategory(null, now());
         database.saveSession(session);
         askCategory(userId, MenuCategory.SALAD);
     }
@@ -399,6 +482,7 @@ public class BotService {
 
     private void notifyAdminsAboutOrder(long userId, OrderDraft draft) {
         String text = "🆕 Новая заявка\n\n" +
+                "Компания: " + safe(draft.company()) + "\n" +
                 "ФИО: " + safe(draft.fullName()) + "\n" +
                 "Пользователь ID: " + userId + "\n" +
                 "Время: " + MOSCOW_TIME.format(Instant.now()) + " МСК\n\n" +
@@ -450,6 +534,32 @@ public class BotService {
         }
     }
 
+    private void handleAddCompanyInput(long userId, String text) {
+        String name = text.trim();
+        if (name.isBlank()) {
+            sendText(userId, "Название компании не может быть пустым.", adminBackKeyboard());
+            return;
+        }
+        database.addCompany(name);
+        database.resetSession(userId);
+        sendText(userId, "✅ Компания добавлена.", companyBackWithAddMoreKeyboard());
+    }
+
+    private void handleDeleteCompanyNumberInput(long userId, String text) {
+        try {
+            int number = Integer.parseInt(text.trim());
+            boolean deleted = database.deleteCompanyBySequence(number);
+            database.resetSession(userId);
+            if (deleted) {
+                sendText(userId, "✅ Компания удалена.", companyBackWithAddMoreKeyboard());
+            } else {
+                sendText(userId, "Компания с таким номером не найдена.", companyBackWithAddMoreKeyboard());
+            }
+        } catch (NumberFormatException e) {
+            sendText(userId, "Введите именно порядковый номер компании.", companyBackWithAddMoreKeyboard());
+        }
+    }
+
     private void showAdminPanel(long userId) {
         database.resetSession(userId);
         sendText(userId, "🛠️ Админ панель\nВыберите действие:", ofRows(
@@ -457,6 +567,8 @@ public class BotService {
                 row(button("➕ Добавить админа", "admin:addAdmin")),
                 row(button("📦 Заявки", "admin:orders:0")),
                 row(button("🍽️ Изменить позиции", "admin:menu")),
+                row(button("🏢 Компании", "admin:companies")),
+                row(button("📊 Выгрузка excel", "admin:excel")),
                 row(button("📝 Перейти к опросу", "nav:survey"))
         ));
     }
@@ -498,6 +610,7 @@ public class BotService {
             for (OrderRecord order : result.items()) {
                 text.append("#").append(order.id())
                         .append(" | ").append(MOSCOW_TIME.format(Instant.ofEpochMilli(order.createdAt()))).append(" МСК\n")
+                        .append("Компания: ").append(safe(order.company())).append("\n")
                         .append("ФИО: ").append(safe(order.fullName())).append("\n")
                         .append("Салат: ").append(safe(order.salad())).append("\n")
                         .append("Суп: ").append(safe(order.soup())).append("\n")
@@ -545,12 +658,147 @@ public class BotService {
         return text.toString().trim();
     }
 
+    private void showCompanyManagement(long userId) {
+        sendText(userId, "🏢 Управление компаниями\nВыберите действие:", ofRows(
+                row(button("📋 Текущие компании", "admin:companies:view")),
+                row(button("➕ Добавить компанию", "admin:companies:add")),
+                row(button("➖ Удалить компанию", "admin:companies:delete")),
+                row(button("↩️ В админ панель", "admin:panel"))
+        ));
+    }
+
+    private void showCurrentCompanies(long userId) {
+        sendText(userId, currentCompaniesText(), ofRows(
+                row(button("➕ Добавить компанию", "admin:companies:add")),
+                row(button("➖ Удалить компанию", "admin:companies:delete")),
+                row(button("↩️ В админ панель", "admin:panel"))
+        ));
+    }
+
+    private String currentCompaniesText() {
+        List<CompanyItem> companies = database.companies();
+        StringBuilder text = new StringBuilder("🏢 Текущие компании\n\n");
+        if (companies.isEmpty()) {
+            text.append("- пока пусто");
+            return text.toString();
+        }
+        for (int i = 0; i < companies.size(); i++) {
+            text.append(i + 1).append(". ").append(companies.get(i).name()).append("\n");
+        }
+        return text.toString().trim();
+    }
+
+    private void sendExcelExport(long userId) {
+        Path tempFile = null;
+        try {
+            tempFile = buildExcelExport();
+            apiClient.sendFileMessage(userId, "📊 Выгрузка заказов", tempFile);
+            sendText(userId, "Файл сформирован. Вы можете обновить его в любой момент.", excelActionsKeyboard());
+        } catch (Exception e) {
+            log.error("Failed to export excel", e);
+            sendText(userId, "Не удалось сформировать Excel файл. Попробуйте позже.", excelActionsKeyboard());
+        } finally {
+            if (tempFile != null) {
+                try {
+                    Files.deleteIfExists(tempFile);
+                } catch (IOException e) {
+                    log.warn("Cannot delete temp excel {}", tempFile, e);
+                }
+            }
+        }
+    }
+
+    private Path buildExcelExport() {
+        Map<String, List<OrderRecord>> grouped = database.allOrdersGroupedByDate();
+        try (XSSFWorkbook workbook = new XSSFWorkbook()) {
+            if (grouped.isEmpty()) {
+                Sheet sheet = workbook.createSheet("Пусто");
+                Row row = sheet.createRow(0);
+                row.createCell(0).setCellValue("Заявок пока нет");
+            } else {
+                Set<String> usedSheetNames = new HashSet<>();
+                for (Map.Entry<String, List<OrderRecord>> entry : grouped.entrySet()) {
+                    String sheetName = uniqueSheetName(usedSheetNames, entry.getKey());
+                    Sheet sheet = workbook.createSheet(sheetName);
+                    writeOrdersSheet(sheet, entry.getValue());
+                }
+            }
+
+            Path temp = Files.createTempFile("orders-export-", ".xlsx");
+            try (OutputStream output = Files.newOutputStream(temp)) {
+                workbook.write(output);
+            }
+            return temp;
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot build excel file", e);
+        }
+    }
+
+    private void writeOrdersSheet(Sheet sheet, List<OrderRecord> orders) {
+        Row header = sheet.createRow(0);
+        header.createCell(0).setCellValue("ID");
+        header.createCell(1).setCellValue("Компания");
+        header.createCell(2).setCellValue("ФИО");
+        header.createCell(3).setCellValue("Салат");
+        header.createCell(4).setCellValue("Суп");
+        header.createCell(5).setCellValue("Горячее");
+        header.createCell(6).setCellValue("Доп. позиция");
+        header.createCell(7).setCellValue("Пользователь ID");
+        header.createCell(8).setCellValue("Время (МСК)");
+
+        int rowNum = 1;
+        for (OrderRecord order : orders) {
+            Row row = sheet.createRow(rowNum++);
+            row.createCell(0).setCellValue(order.id());
+            row.createCell(1).setCellValue(safe(order.company()));
+            row.createCell(2).setCellValue(safe(order.fullName()));
+            row.createCell(3).setCellValue(safe(order.salad()));
+            row.createCell(4).setCellValue(safe(order.soup()));
+            row.createCell(5).setCellValue(safe(order.hot()));
+            row.createCell(6).setCellValue(safe(order.extra()));
+            row.createCell(7).setCellValue(order.userId());
+            row.createCell(8).setCellValue(MOSCOW_TIME.format(Instant.ofEpochMilli(order.createdAt())));
+        }
+
+        for (int i = 0; i <= 8; i++) {
+            sheet.autoSizeColumn(i);
+        }
+    }
+
+    private String uniqueSheetName(Set<String> used, String rawDate) {
+        String base = sanitizeSheetName(rawDate == null || rawDate.isBlank() ? "Unknown" : rawDate);
+        String name = base;
+        int idx = 2;
+        while (used.contains(name)) {
+            String suffix = "_" + idx++;
+            name = base.length() + suffix.length() > 31
+                    ? base.substring(0, 31 - suffix.length()) + suffix
+                    : base + suffix;
+        }
+        used.add(name);
+        return name;
+    }
+
+    private String sanitizeSheetName(String name) {
+        String cleaned = name.replaceAll("[\\\\/*?:\\[\\]]", "_");
+        if (cleaned.isBlank()) {
+            cleaned = "Sheet";
+        }
+        return cleaned.length() > 31 ? cleaned.substring(0, 31) : cleaned;
+    }
+
     private void sendStartScreen(long userId) {
-        sendText(userId, "Здравствуйте! Для продолжения нажмите кнопку ниже. 👇", startKeyboard(userId));
+        SessionData session = database.session(userId);
+        String selectedCompany = session.draft().company();
+        String prefix = selectedCompany == null || selectedCompany.isBlank()
+                ? "Компания не выбрана."
+                : "Выбрана компания: " + selectedCompany + ".";
+        sendText(userId, prefix + "\nЗдравствуйте! Для продолжения нажмите кнопку ниже. 👇", startKeyboard(userId));
     }
 
     private List<List<MaxBotApiClient.CallbackButton>> startKeyboard(long userId) {
         List<List<MaxBotApiClient.CallbackButton>> rows = new ArrayList<>();
+        rows.add(row(button("🏢 Выбрать компанию", "nav:start")));
         rows.add(row(button("🍽️ Сделать заказ", "nav:order")));
         if (database.isAdmin(userId)) {
             rows.add(row(button("🛠️ Админ панель", "nav:admin")));
@@ -572,6 +820,20 @@ public class BotService {
     private List<List<MaxBotApiClient.CallbackButton>> adminBackWithAddMoreKeyboard() {
         return ofRows(
                 row(button("➕ Добавить еще", "admin:menu:add")),
+                row(button("↩️ В админ панель", "admin:panel"))
+        );
+    }
+
+    private List<List<MaxBotApiClient.CallbackButton>> companyBackWithAddMoreKeyboard() {
+        return ofRows(
+                row(button("➕ Добавить еще", "admin:companies:add")),
+                row(button("↩️ В админ панель", "admin:panel"))
+        );
+    }
+
+    private List<List<MaxBotApiClient.CallbackButton>> excelActionsKeyboard() {
+        return ofRows(
+                row(button("🔄 Обновить файл", "admin:excel:refresh")),
                 row(button("↩️ В админ панель", "admin:panel"))
         );
     }
@@ -620,7 +882,7 @@ public class BotService {
     }
 
     private String orderSummaryText(OrderDraft draft) {
-        return "Ваш заказ:\n\n" + composeOrderLines(draft) + "\nФИО: " + safe(draft.fullName());
+        return "Ваш заказ:\n\nКомпания: " + safe(draft.company()) + "\n" + composeOrderLines(draft) + "\nФИО: " + safe(draft.fullName());
     }
 
     private String composeOrderLines(OrderDraft draft) {

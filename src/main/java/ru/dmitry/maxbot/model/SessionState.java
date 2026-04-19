@@ -2,6 +2,7 @@ package ru.dmitry.maxbot.model;
 
 public enum SessionState {
     IDLE,
+    ORDER_COMPANY,
     ORDER_SALAD,
     ORDER_SOUP,
     ORDER_HOT,
@@ -10,7 +11,9 @@ public enum SessionState {
     ORDER_CONFIRMATION,
     ADMIN_ADD_ADMIN_ID,
     ADMIN_ADD_MENU_NAME,
-    ADMIN_DELETE_MENU_NUMBER;
+    ADMIN_DELETE_MENU_NUMBER,
+    ADMIN_ADD_COMPANY_NAME,
+    ADMIN_DELETE_COMPANY_NUMBER;
 
     public static SessionState forOrderCategory(MenuCategory category) {
         return switch (category) {

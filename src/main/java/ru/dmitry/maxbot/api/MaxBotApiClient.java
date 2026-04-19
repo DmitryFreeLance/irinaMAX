@@ -9,6 +9,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import ru.dmitry.maxbot.api.dto.UpdateListPayload;
 import ru.dmitry.maxbot.config.AppConfig;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
@@ -16,6 +17,8 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -66,6 +69,14 @@ public class MaxBotApiClient {
         postJson(url, body, JsonNode.class);
     }
 
+    public void sendFileMessage(long userId, String caption, Path filePath) {
+        UploadEndpoint endpoint = send(baseRequest(baseUrl + "/uploads?type=file").POST(HttpRequest.BodyPublishers.noBody()).build(), UploadEndpoint.class);
+        String token = uploadFile(endpoint.url(), filePath);
+        MessageRequest body = new MessageRequest(caption, List.of(new FileAttachment(new UploadedInfo(token))));
+        String url = baseUrl + "/messages?user_id=" + userId;
+        postJson(url, body, JsonNode.class);
+    }
+
     public void answerCallback(String callbackId) {
         String url = baseUrl + "/answers?callback_id=" + encode(callbackId);
         postJson(url, Map.of("notification", "Принято"), CallbackAnswerResponse.class);
@@ -89,6 +100,42 @@ public class MaxBotApiClient {
         return HttpRequest.newBuilder(URI.create(url))
                 .header("Authorization", token)
                 .header("Accept", "application/json");
+    }
+
+    private String uploadFile(String uploadUrl, Path filePath) {
+        String boundary = "----MaxBotBoundary" + System.currentTimeMillis();
+        byte[] fileBytes;
+        try {
+            fileBytes = Files.readAllBytes(filePath);
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot read file for upload", e);
+        }
+        byte[] multipartBody = buildMultipartBody(boundary, filePath.getFileName().toString(), fileBytes);
+        HttpRequest request = HttpRequest.newBuilder(URI.create(uploadUrl))
+                .header("Content-Type", "multipart/form-data; boundary=" + boundary)
+                .POST(HttpRequest.BodyPublishers.ofByteArray(multipartBody))
+                .timeout(Duration.ofSeconds(60))
+                .build();
+        JsonNode node = send(request, JsonNode.class);
+        JsonNode token = node.get("token");
+        if (token == null || token.isNull() || token.asText().isBlank()) {
+            throw new IllegalStateException("Upload response does not contain token");
+        }
+        return token.asText();
+    }
+
+    private byte[] buildMultipartBody(String boundary, String fileName, byte[] fileBytes) {
+        try {
+            ByteArrayOutputStream output = new ByteArrayOutputStream();
+            output.write(("--" + boundary + "\r\n").getBytes(StandardCharsets.UTF_8));
+            output.write(("Content-Disposition: form-data; name=\"data\"; filename=\"" + fileName + "\"\r\n").getBytes(StandardCharsets.UTF_8));
+            output.write("Content-Type: application/octet-stream\r\n\r\n".getBytes(StandardCharsets.UTF_8));
+            output.write(fileBytes);
+            output.write(("\r\n--" + boundary + "--\r\n").getBytes(StandardCharsets.UTF_8));
+            return output.toByteArray();
+        } catch (IOException e) {
+            throw new IllegalStateException("Cannot build multipart request", e);
+        }
     }
 
     private <T> T send(HttpRequest request, Class<T> responseType) {
@@ -121,13 +168,25 @@ public class MaxBotApiClient {
         return URLEncoder.encode(value, StandardCharsets.UTF_8);
     }
 
-    public record MessageRequest(String text, List<InlineKeyboardAttachment> attachments) {
+    public record MessageRequest(String text, List<?> attachments) {
+    }
+
+    public record UploadEndpoint(String url, String token) {
     }
 
     public record InlineKeyboardAttachment(String type, Payload payload) {
         public InlineKeyboardAttachment(List<List<CallbackButton>> buttons) {
             this("inline_keyboard", new Payload(buttons));
         }
+    }
+
+    public record FileAttachment(String type, UploadedInfo payload) {
+        public FileAttachment(UploadedInfo payload) {
+            this("file", payload);
+        }
+    }
+
+    public record UploadedInfo(String token) {
     }
 
     public record Payload(List<List<CallbackButton>> buttons) {
