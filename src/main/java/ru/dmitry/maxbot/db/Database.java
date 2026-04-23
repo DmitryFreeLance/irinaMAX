@@ -1,6 +1,5 @@
 package ru.dmitry.maxbot.db;
 
-import ru.dmitry.maxbot.model.CompanyItem;
 import ru.dmitry.maxbot.model.MenuCategory;
 import ru.dmitry.maxbot.model.MenuItem;
 import ru.dmitry.maxbot.model.OrderDraft;
@@ -42,7 +41,6 @@ public class Database {
         }
         this.jdbcUrl = "jdbc:sqlite:" + sqlitePath;
         init();
-        applyMigrations();
         seedInitialAdmins(initialAdminIds);
     }
 
@@ -124,7 +122,6 @@ public class Database {
                     return new SessionData(
                             rs.getLong("user_id"),
                             SessionState.valueOf(rs.getString("state")),
-                            rs.getString("company"),
                             rs.getString("salad"),
                             rs.getString("soup"),
                             rs.getString("hot"),
@@ -145,11 +142,10 @@ public class Database {
 
     public void saveSession(SessionData session) {
         String sql = """
-                INSERT INTO sessions (user_id, state, company, salad, soup, hot, extra, full_name, pending_category, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO sessions (user_id, state, salad, soup, hot, extra, full_name, pending_category, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(user_id) DO UPDATE SET
                     state = excluded.state,
-                    company = excluded.company,
                     salad = excluded.salad,
                     soup = excluded.soup,
                     hot = excluded.hot,
@@ -161,14 +157,13 @@ public class Database {
         try (Connection connection = connection(); PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setLong(1, session.userId());
             statement.setString(2, session.state().name());
-            statement.setString(3, session.company());
-            statement.setString(4, session.salad());
-            statement.setString(5, session.soup());
-            statement.setString(6, session.hot());
-            statement.setString(7, session.extra());
-            statement.setString(8, session.fullName());
-            statement.setString(9, session.pendingCategory());
-            statement.setLong(10, session.updatedAt());
+            statement.setString(3, session.salad());
+            statement.setString(4, session.soup());
+            statement.setString(5, session.hot());
+            statement.setString(6, session.extra());
+            statement.setString(7, session.fullName());
+            statement.setString(8, session.pendingCategory());
+            statement.setLong(9, session.updatedAt());
             statement.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("Cannot save session", e);
@@ -256,71 +251,14 @@ public class Database {
         }
     }
 
-    public List<CompanyItem> companies() {
-        List<CompanyItem> items = new ArrayList<>();
-        String sql = "SELECT id, name, display_order, active FROM companies WHERE active = 1 ORDER BY display_order, id";
-        try (Connection connection = connection(); PreparedStatement statement = connection.prepareStatement(sql)) {
-            try (ResultSet rs = statement.executeQuery()) {
-                while (rs.next()) {
-                    items.add(new CompanyItem(
-                            rs.getLong("id"),
-                            rs.getString("name"),
-                            rs.getInt("display_order"),
-                            rs.getInt("active") == 1
-                    ));
-                }
-            }
-            return items;
-        } catch (SQLException e) {
-            throw new IllegalStateException("Cannot load companies", e);
-        }
-    }
-
-    public void addCompany(String name) {
-        String nextOrderSql = "SELECT COALESCE(MAX(display_order), 0) + 1 AS next_order FROM companies WHERE active = 1";
-        String insertSql = "INSERT INTO companies (name, display_order, active, created_at) VALUES (?, ?, 1, ?)";
-        try (Connection connection = connection();
-             PreparedStatement nextOrder = connection.prepareStatement(nextOrderSql);
-             PreparedStatement insert = connection.prepareStatement(insertSql)) {
-            int displayOrder = 1;
-            try (ResultSet rs = nextOrder.executeQuery()) {
-                if (rs.next()) {
-                    displayOrder = rs.getInt("next_order");
-                }
-            }
-            insert.setString(1, name);
-            insert.setInt(2, displayOrder);
-            insert.setLong(3, Instant.now().toEpochMilli());
-            insert.executeUpdate();
-        } catch (SQLException e) {
-            throw new IllegalStateException("Cannot add company", e);
-        }
-    }
-
-    public boolean deleteCompanyBySequence(int sequenceNumber) {
-        List<CompanyItem> items = companies();
-        if (sequenceNumber < 1 || sequenceNumber > items.size()) {
-            return false;
-        }
-        long id = items.get(sequenceNumber - 1).id();
-        try (Connection connection = connection(); PreparedStatement statement = connection.prepareStatement(
-                "UPDATE companies SET active = 0 WHERE id = ?")) {
-            statement.setLong(1, id);
-            return statement.executeUpdate() > 0;
-        } catch (SQLException e) {
-            throw new IllegalStateException("Cannot delete company", e);
-        }
-    }
-
     public Map<String, List<OrderRecord>> allOrdersGroupedByDate() {
         Map<String, List<OrderRecord>> result = new LinkedHashMap<>();
-        String sql = "SELECT id, user_id, company, full_name, salad, soup, hot, extra, created_at, created_date_msk FROM orders ORDER BY created_date_msk ASC, created_at ASC";
+        String sql = "SELECT id, user_id, full_name, salad, soup, hot, extra, created_at, created_date_msk FROM orders ORDER BY created_date_msk ASC, created_at ASC";
         try (Connection connection = connection(); PreparedStatement statement = connection.prepareStatement(sql); ResultSet rs = statement.executeQuery()) {
             while (rs.next()) {
                 OrderRecord record = new OrderRecord(
                         rs.getLong("id"),
                         rs.getLong("user_id"),
-                        rs.getString("company"),
                         rs.getString("full_name"),
                         rs.getString("salad"),
                         rs.getString("soup"),
@@ -339,18 +277,17 @@ public class Database {
 
     public void saveOrder(long userId, OrderDraft draft) {
         LocalDate today = LocalDate.now(MOSCOW);
-        String sql = "INSERT INTO orders (user_id, company, full_name, salad, soup, hot, extra, created_at, created_date_msk) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        String sql = "INSERT INTO orders (user_id, full_name, salad, soup, hot, extra, created_at, created_date_msk) VALUES (?, ?, ?, ?, ?, ?, ?, ?)";
         long now = Instant.now().toEpochMilli();
         try (Connection connection = connection(); PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setLong(1, userId);
-            statement.setString(2, draft.company());
-            statement.setString(3, draft.fullName());
-            statement.setString(4, draft.salad());
-            statement.setString(5, draft.soup());
-            statement.setString(6, draft.hot());
-            statement.setString(7, draft.extra());
-            statement.setLong(8, now);
-            statement.setString(9, today.toString());
+            statement.setString(2, draft.fullName());
+            statement.setString(3, draft.salad());
+            statement.setString(4, draft.soup());
+            statement.setString(5, draft.hot());
+            statement.setString(6, draft.extra());
+            statement.setLong(7, now);
+            statement.setString(8, today.toString());
             statement.executeUpdate();
         } catch (SQLException e) {
             throw new IllegalStateException("Cannot save order", e);
@@ -399,7 +336,7 @@ public class Database {
         int totalPages = pageCount(totalItems, pageSize);
         int safePage = normalizePage(page, totalPages);
         List<OrderRecord> orders = new ArrayList<>();
-        String sql = "SELECT id, user_id, company, full_name, salad, soup, hot, extra, created_at, created_date_msk FROM orders WHERE created_date_msk = ? ORDER BY created_at DESC LIMIT ? OFFSET ?";
+        String sql = "SELECT id, user_id, full_name, salad, soup, hot, extra, created_at, created_date_msk FROM orders WHERE created_date_msk = ? ORDER BY created_at DESC LIMIT ? OFFSET ?";
         try (Connection connection = connection(); PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, today.toString());
             statement.setInt(2, pageSize);
@@ -409,7 +346,6 @@ public class Database {
                     orders.add(new OrderRecord(
                             rs.getLong("id"),
                             rs.getLong("user_id"),
-                            rs.getString("company"),
                             rs.getString("full_name"),
                             rs.getString("salad"),
                             rs.getString("soup"),
@@ -502,7 +438,6 @@ public class Database {
                     CREATE TABLE IF NOT EXISTS orders (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         user_id INTEGER NOT NULL,
-                        company TEXT,
                         full_name TEXT NOT NULL,
                         salad TEXT,
                         soup TEXT,
@@ -516,7 +451,6 @@ public class Database {
                     CREATE TABLE IF NOT EXISTS sessions (
                         user_id INTEGER PRIMARY KEY,
                         state TEXT NOT NULL,
-                        company TEXT,
                         salad TEXT,
                         soup TEXT,
                         hot TEXT,
@@ -526,38 +460,9 @@ public class Database {
                         updated_at INTEGER NOT NULL
                     )
                     """);
-            statement.execute("""
-                    CREATE TABLE IF NOT EXISTS companies (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        name TEXT NOT NULL,
-                        display_order INTEGER NOT NULL,
-                        active INTEGER NOT NULL DEFAULT 1,
-                        created_at INTEGER NOT NULL
-                    )
-                    """);
         } catch (SQLException e) {
             throw new IllegalStateException("Cannot initialize database", e);
         }
-    }
-
-    private void applyMigrations() {
-        try (Connection connection = connection(); Statement statement = connection.createStatement()) {
-            ensureColumn(statement, "orders", "company", "ALTER TABLE orders ADD COLUMN company TEXT");
-            ensureColumn(statement, "sessions", "company", "ALTER TABLE sessions ADD COLUMN company TEXT");
-        } catch (SQLException e) {
-            throw new IllegalStateException("Cannot apply database migrations", e);
-        }
-    }
-
-    private void ensureColumn(Statement statement, String table, String column, String alterSql) throws SQLException {
-        try (ResultSet rs = statement.executeQuery("PRAGMA table_info(" + table + ")")) {
-            while (rs.next()) {
-                if (column.equalsIgnoreCase(rs.getString("name"))) {
-                    return;
-                }
-            }
-        }
-        statement.execute(alterSql);
     }
 
     private Connection connection() throws SQLException {
